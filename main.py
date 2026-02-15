@@ -6,6 +6,15 @@ import tkinter as tk
 from PIL import Image, ImageTk
 import pygame
 from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC
+import io
+
+# Force the modern GPIO factory for newer Linux kernels
+os.environ['GPIOZERO_PIN_FACTORY'] = 'lgpio'
+try:
+    from gpiozero import Button as PhysicalButton
+except ImportError:
+    PhysicalButton = None
 
 # --- STYLING ---
 BG = "#2B2B2B"
@@ -17,6 +26,18 @@ def natural_sort(l):
     convert = lambda text: int(text) if text.isdigit() else text.lower()
     alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
     return sorted(l, key=alphanum_key)
+
+
+def get_single_song_art(song_path):
+    """Extracts album art from a specific MP3 file"""
+    try:
+        audio = MP3(song_path, ID3=ID3)
+        for tag in audio.tags.values():
+            if isinstance(tag, APIC):
+                return Image.open(io.BytesIO(tag.data))
+    except:
+        pass
+    return None
 
 
 # --- SCREENS ---
@@ -82,7 +103,7 @@ class MP3Menu(tk.Frame):
         self.clear_screen()
         self.view_mode = "menu"
         self.is_playlist_selected = False
-        self.sub_menu_frame = tk.Frame(self, bg=BG);
+        self.sub_menu_frame = tk.Frame(self, bg=BG)
         self.sub_menu_frame.pack(expand=True)
         self.btns = []
         opts = [("PLAYLISTS", self.show_playlists), ("NOW PLAYING", lambda: self.ctrl.show_frame(NowPlaying)),
@@ -104,17 +125,19 @@ class MP3Menu(tk.Frame):
         self.clear_screen()
         self.view_mode = "list"
         self.is_playlist_selected = False
-        self.list_frame = tk.Frame(self, bg=BG);
+        self.list_frame = tk.Frame(self, bg=BG)
         self.list_frame.pack(fill="both", expand=True)
         self.left = tk.Frame(self.list_frame, bg=BG, width=350);
         self.left.pack(side="left", fill="both", padx=10);
         self.left.pack_propagate(False)
         self.right = tk.Frame(self.list_frame, bg=BG);
         self.right.pack(side="right", fill="both", expand=True, padx=10)
+
         self.pl_can = tk.Canvas(self.left, bg=BG, highlightthickness=0);
         self.pl_can.pack(fill="both", expand=True)
         self.pl_con = tk.Frame(self.pl_can, bg=BG);
         self.pl_can.create_window((0, 0), window=self.pl_con, anchor="nw")
+
         self.sg_can = tk.Canvas(self.right, bg=BG, highlightthickness=0);
         self.sg_can.pack(fill="both", expand=True)
         self.sg_con = tk.Frame(self.sg_can, bg=BG);
@@ -133,38 +156,67 @@ class MP3Menu(tk.Frame):
             f_frame.pack(fill="x", pady=2)
             img_label = tk.Label(f_frame, bg=BG);
             img_label.pack(side="left")
+            display_name = folder.upper()
             if folder != "BACK":
-                img_p = os.path.join(path, folder, "cover.png")
-                if os.path.exists(img_p):
+                img = None
+                if "(METADATA)" not in display_name:
+                    img_p = os.path.join(path, folder, "cover.png")
+                    if os.path.exists(img_p): img = Image.open(img_p)
+                if img:
                     try:
-                        img = Image.open(img_p).resize((30, 30), Image.Resampling.LANCZOS)
-                        p_img = ImageTk.PhotoImage(img);
+                        img_resized = img.resize((30, 30), Image.Resampling.LANCZOS)
+                        p_img = ImageTk.PhotoImage(img_resized);
                         img_label.config(image=p_img);
                         img_label.image = p_img
                     except:
                         pass
-            btn = tk.Button(f_frame, text=f" {folder.upper()}", font=("Courier", 10), bg=BG, fg=FG, bd=0, anchor="w",
+            btn = tk.Button(f_frame, text=f" {display_name}", font=("Courier", 10), bg=BG, fg=FG, bd=0, anchor="w",
                             command=lambda f=folder: self.load_songs(f) if f != "BACK" else self.refresh())
             btn.pack(side="left", fill="x", expand=True);
             self.pl_btns.append(btn)
+        self.pl_con.update_idletasks();
+        self.pl_can.config(scrollregion=self.pl_can.bbox("all"))
         self.focus_side, self.cur_idx = "left", 0
         self.update_visuals()
 
     def load_songs(self, folder):
         self.is_playlist_selected = True
         self.ctrl.path = f"/home/dietpi/pidice/MP3s/{folder}"
-        for b in self.sg_btns: b.destroy()
+
+        # Hard Clear
+        for widget in self.sg_con.winfo_children(): widget.destroy()
         self.sg_btns = []
+
         try:
             self.current_songs = natural_sort([f for f in os.listdir(self.ctrl.path) if f.endswith(".mp3")])
         except:
             self.current_songs = []
+
+        is_metadata = "(METADATA)" in folder.upper()
         for s in self.current_songs:
-            btn = tk.Button(self.sg_con, text=f" {s[:30]}", font=("Courier", 9), bg=BG, fg=FG, bd=0, anchor="w",
+            s_frame = tk.Frame(self.sg_con, bg=BG);
+            s_frame.pack(fill="x", pady=1)
+            img_label = tk.Label(s_frame, bg=BG);
+            img_label.pack(side="left")
+            if is_metadata:
+                img = get_single_song_art(os.path.join(self.ctrl.path, s))
+                if img:
+                    try:
+                        img_resized = img.resize((25, 25), Image.Resampling.LANCZOS)
+                        p_img = ImageTk.PhotoImage(img_resized);
+                        img_label.config(image=p_img);
+                        img_label.image = p_img
+                    except:
+                        pass
+            btn = tk.Button(s_frame, text=f" {s[:30]}", font=("Courier", 9), bg=BG, fg=FG, bd=0, anchor="w",
                             command=lambda sn=s: self.ctrl.play_track(self.current_songs, self.current_songs.index(sn),
                                                                       self.ctrl.path))
-            btn.pack(fill="x");
+            btn.pack(side="left", fill="x", expand=True);
             self.sg_btns.append(btn)
+
+        self.sg_con.update_idletasks();
+        self.sg_can.config(scrollregion=self.sg_can.bbox("all"))
+        self.sg_can.yview_moveto(0)
         self.focus_side, self.cur_idx = "right", 0
         self.update_visuals()
 
@@ -172,39 +224,47 @@ class MP3Menu(tk.Frame):
         if self.view_mode == "menu":
             self.cur_idx = (self.cur_idx + d) % len(self.btns)
         else:
-            if not is_vertical and self.is_playlist_selected:
-                if d == 1 and self.focus_side == "left":
-                    self.focus_side, self.cur_idx = "right", 0;
-                    self.update_visuals();
+            # FIX: Immediate swap on horizontal to prevent double-press
+            if not is_vertical:
+                if d == 1 and self.focus_side == "left" and self.is_playlist_selected:
+                    self.focus_side, self.cur_idx = "right", 0
+                    self.update_visuals()
                     return
                 elif d == -1 and self.focus_side == "right":
-                    self.focus_side, self.cur_idx = "left", 0;
-                    self.update_visuals();
+                    self.focus_side, self.cur_idx = "left", 0
+                    self.update_visuals()
                     return
 
             active = self.pl_btns if self.focus_side == "left" else self.sg_btns
             if not active: return
-            new_idx = self.cur_idx + d
-            if 0 <= new_idx < len(active):
-                self.cur_idx = new_idx
-                canvas = self.pl_can if self.focus_side == "left" else self.sg_can
-                self.update_idletasks()
-                btn = active[self.cur_idx]
-                y_pos, btn_h, can_h = btn.winfo_y(), btn.winfo_height(), canvas.winfo_height()
-                if y_pos + btn_h > can_h:
-                    canvas.yview_scroll(1, "units")
-                elif y_pos < 0:
-                    canvas.yview_scroll(-1, "units")
+            self.cur_idx = (self.cur_idx + d) % len(active)
+
+            # Scrolling logic
+            canvas = self.pl_can if self.focus_side == "left" else self.sg_can
+            self.update_idletasks()
+            target = active[self.cur_idx].master  # Always use parent frame for geometry
+            bbox = canvas.bbox("all")
+            total_h = float(bbox[3] - bbox[1]) if bbox else 1.0
+
+            btn_top = target.winfo_y() / total_h
+            btn_bottom = (target.winfo_y() + target.winfo_height()) / total_h
+            view_top, view_bottom = canvas.yview()
+
+            if btn_top < view_top:
+                canvas.yview_moveto(btn_top)
+            elif btn_bottom > view_bottom:
+                canvas.yview_moveto(btn_bottom - (view_bottom - view_top))
         self.update_visuals()
 
     def update_visuals(self):
         if self.view_mode == "menu":
-            for i, b in enumerate(self.btns): b.config(bg=FG if i == self.cur_idx else BG,
-                                                       fg=BG if i == self.cur_idx else FG)
+            for i, b in enumerate(self.btns):
+                b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
         else:
             for b in self.pl_btns + self.sg_btns: b.config(bg=BG, fg=FG)
             active = self.pl_btns if self.focus_side == "left" else self.sg_btns
-            if active and self.cur_idx < len(active): active[self.cur_idx].config(bg=FG, fg=BG)
+            if active and self.cur_idx < len(active):
+                active[self.cur_idx].config(bg=FG, fg=BG)
 
     def trigger_selection(self):
         if self.view_mode == "menu":
@@ -253,18 +313,24 @@ class NowPlaying(tk.Frame):
 
     def refresh(self):
         if not self.ctrl.playlist:
-            self.title.config(text="NOTHING IS PLAYING");
-            self.cover_label.config(image="", text="")
-            self.t_lbl.config(text="-0:00");
-            self.p_can.coords(self.p_bar, 0, 0, 0, 10)
+            self.title.config(text="NOTHING IS PLAYING"); self.cover_label.config(image="", text="")
         else:
-            self.title.config(text=self.ctrl.playlist[self.ctrl.idx].replace(".mp3", ""))
-            img_p = os.path.join(self.ctrl.path, "cover.png")
-            if os.path.exists(img_p):
-                img = Image.open(img_p).resize((300, 300), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(img);
-                self.cover_label.config(image=photo);
-                self.cover_label.image = photo
+            song_file = self.ctrl.playlist[self.ctrl.idx]
+            self.title.config(text=song_file.replace(".mp3", ""))
+            img = None
+            if "(METADATA)" in self.ctrl.path.upper():
+                img = get_single_song_art(os.path.join(self.ctrl.path, song_file))
+            else:
+                img_p = os.path.join(self.ctrl.path, "cover.png")
+                if os.path.exists(img_p): img = Image.open(img_p)
+            if img:
+                try:
+                    img_resized = img.resize((300, 300), Image.Resampling.LANCZOS);
+                    photo = ImageTk.PhotoImage(img_resized)
+                    self.cover_label.config(image=photo);
+                    self.cover_label.image = photo
+                except:
+                    pass
             else:
                 self.cover_label.config(image="", text="NO COVER")
         self.update_ui_loop();
@@ -286,19 +352,16 @@ class NowPlaying(tk.Frame):
 
     def update_vol_bar(self):
         ratio = self.vol_level / 0.5;
-        self.v_can.coords(self.v_bar, 0, 0, ratio * self.v_can.winfo_width(), 10)
+        self.v_can.coords(self.v_bar, 0, 0, ratio * self.v_can.winfo_width(), 10);
         self.v_lbl.config(text=f"{int(ratio * 100)}%")
 
     def change_volume(self, d):
-        self.vol_level = max(0.0, min(0.5, self.vol_level + (d * 0.025)))
-        pygame.mixer.music.set_volume(self.vol_level);
-        self.update_vol_bar();
-        self.ctrl.queue_save()
+        self.vol_level = max(0.0, min(0.5, self.vol_level + (d * 0.025))); pygame.mixer.music.set_volume(
+            self.vol_level); self.update_vol_bar(); self.ctrl.queue_save()
 
     def toggle_repeat(self):
-        self.repeat = not self.repeat
-        self.btns[3].config(text=f"REPEAT: {'ON' if self.repeat else 'OFF'}")
-        self.ctrl.queue_save()
+        self.repeat = not self.repeat; self.btns[3].config(
+            text=f"REPEAT: {'ON' if self.repeat else 'OFF'}"); self.ctrl.queue_save()
 
     def move(self, d, is_vertical=True):
         self.cur_idx = (self.cur_idx + d) % len(self.btns); self.update_visuals()
@@ -330,16 +393,13 @@ class SettingsMenu(tk.Frame):
         super().__init__(parent, bg=BG);
         self.ctrl = controller
         self.cur_idx, self.sleep_idx = 0, 0
-        self.sleep_opts = ["OFF", "30s", "1m", "3m", "5m", "10m"]
+        self.sleep_opts = ["OFF", "30s", "1m", "3m", "5m", "10m"];
         self.sleep_times = [0, 30000, 60000, 180000, 300000, 600000]
         tk.Label(self, text="SETTINGS", font=("Courier", 18, "bold"), bg=BG, fg=FG).pack(pady=10)
         self.pwr_lbl = tk.Label(self, text="POWER: --", font=("Courier", 10), bg=BG, fg="yellow");
         self.pwr_lbl.pack()
-        self.stats_lbl = tk.Label(self, text="CPU: --% | --°C | RAM: --%", font=("Courier", 10), bg=BG, fg=FG);
+        self.stats_lbl = tk.Label(self, text="CPU: --% | --°C", font=("Courier", 10), bg=BG, fg=FG);
         self.stats_lbl.pack(pady=5)
-        self.storage_lbl = tk.Label(self, text="STORAGE: --/-- GB", font=("Courier", 10), bg=BG, fg="#AAA");
-        self.storage_lbl.pack(pady=5)
-
         self.btns = []
         texts = ["OVERLAY: OFF", "SLEEP: OFF", "REBOOT", "SHUTDOWN", "RESTART APP", "QUIT TO TERMINAL", "BACK"]
         cmds = [self.toggle_ov, self.cycle_sl, lambda: os.system("sudo reboot"), lambda: os.system("sudo poweroff"),
@@ -357,29 +417,22 @@ class SettingsMenu(tk.Frame):
             import psutil
             with open("/sys/class/thermal/thermal_zone0/temp") as f:
                 t = int(f.read()) / 1000
-            ram = psutil.virtual_memory().percent
             pwr = os.popen('vcgencmd get_throttled').read().split('=')[1].strip()
-            usage = psutil.disk_usage('/')
-            u_gb, t_gb, a_gb = usage.used / 1e9, usage.total / 1e9, usage.free / 1e9
             self.pwr_lbl.config(text=f"POWER: {'OK' if pwr == '0x0' else 'UNDERVOLT!'}",
                                 fg="green" if pwr == "0x0" else "red")
-            self.stats_lbl.config(text=f"CPU: {psutil.cpu_percent()}% | {t:.1f}°C | RAM: {ram}%")
-            self.storage_lbl.config(text=f"{a_gb:.1f} GB Left / {u_gb:.1f}/{t_gb:.1f} GB")
+            self.stats_lbl.config(text=f"CPU: {psutil.cpu_percent()}% | {t:.1f}°C")
         except:
             pass
         if self.ctrl.current_screen == SettingsMenu: self.after(5000, self.update_stats)
 
     def toggle_ov(self):
-        s = self.btns[0].cget("text") == "OVERLAY: OFF"
-        self.btns[0].config(text=f"OVERLAY: {'ON' if s else 'OFF'}");
-        self.ctrl.toggle_stats_overlay(s)
-        self.ctrl.queue_save()
+        s = self.btns[0].cget("text") == "OVERLAY: OFF"; self.btns[0].config(
+            text=f"OVERLAY: {'ON' if s else 'OFF'}"); self.ctrl.toggle_stats_overlay(s); self.ctrl.queue_save()
 
     def cycle_sl(self):
-        self.sleep_idx = (self.sleep_idx + 1) % len(self.sleep_opts)
-        self.btns[1].config(text=f"SLEEP: {self.sleep_opts[self.sleep_idx]}");
-        self.ctrl.sleep_limit = self.sleep_times[self.sleep_idx]
-        self.ctrl.queue_save()
+        self.sleep_idx = (self.sleep_idx + 1) % len(self.sleep_opts); self.btns[1].config(
+            text=f"SLEEP: {self.sleep_opts[self.sleep_idx]}"); self.ctrl.sleep_limit = self.sleep_times[
+            self.sleep_idx]; self.ctrl.queue_save()
 
     def move(self, d, is_vertical=True):
         self.cur_idx = (self.cur_idx + d) % len(self.btns); self.update_visuals()
@@ -400,6 +453,13 @@ class App(tk.Tk):
         self.attributes('-fullscreen', True);
         self.attributes('-topmost', True);
         self.configure(bg=BG)
+        self.hw_map = {17: "Up", 27: "Down", 22: "Left", 23: "Right", 24: "Return"}
+        self.hw_btns = []
+        if PhysicalButton:
+            for pin, key in self.hw_map.items():
+                b = PhysicalButton(pin, bounce_time=0.05);
+                b.when_pressed = lambda k=key: self.handle_hw_press(k);
+                self.hw_btns.append(b)
         self.cfg = "/home/dietpi/pidice/settings.json"
         self.container = tk.Frame(self, bg=BG);
         self.container.pack(fill="both", expand=True)
@@ -416,32 +476,23 @@ class App(tk.Tk):
         self.show_frame(Home);
         self.check_loops()
 
+    def handle_hw_press(self, key_name):
+        class FakeEvent:
+            def __init__(self, k): self.keysym = k
+
+        self.handle_keys(FakeEvent(key_name))
+
     def load_settings(self):
         if os.path.exists(self.cfg):
             try:
                 with open(self.cfg, "r") as f:
-                    data = json.load(f)
-                    # Volume
-                    v = data.get("volume", 0.25)
+                    data = json.load(f);
+                    v = data.get("volume", 0.25);
                     self.frames[NowPlaying].vol_level = v;
                     pygame.mixer.music.set_volume(v)
-                    # Repeat
-                    rep = data.get("repeat", False)
-                    self.frames[NowPlaying].repeat = rep
-                    self.frames[NowPlaying].btns[3].config(text=f"REPEAT: {'ON' if rep else 'OFF'}")
-                    # Sleep
+                    rep = data.get("repeat", False);
+                    self.frames[NowPlaying].repeat = rep;
                     self.sleep_limit = data.get("sleep_limit", 0)
-                    try:
-                        idx = self.frames[SettingsMenu].sleep_times.index(self.sleep_limit)
-                        self.frames[SettingsMenu].sleep_idx = idx
-                        self.frames[SettingsMenu].btns[1].config(
-                            text=f"SLEEP: {self.frames[SettingsMenu].sleep_opts[idx]}")
-                    except:
-                        pass
-                    # Overlay
-                    if data.get("overlay", False):
-                        self.after(1000, lambda: self.toggle_stats_overlay(True))
-                        self.frames[SettingsMenu].btns[0].config(text="OVERLAY: ON")
             except:
                 pass
 
@@ -451,12 +502,8 @@ class App(tk.Tk):
 
     def save_now(self):
         try:
-            settings = {
-                "volume": self.frames[NowPlaying].vol_level,
-                "repeat": self.frames[NowPlaying].repeat,
-                "sleep_limit": self.sleep_limit,
-                "overlay": self.overlay.winfo_ismapped()
-            }
+            settings = {"volume": self.frames[NowPlaying].vol_level, "repeat": self.frames[NowPlaying].repeat,
+                        "sleep_limit": self.sleep_limit, "overlay": self.overlay.winfo_ismapped()}
             with open(self.cfg, "w") as f:
                 json.dump(settings, f)
         except:
@@ -499,7 +546,6 @@ class App(tk.Tk):
         self.current_screen = c;
         self.frames[c].tkraise();
         self.frames[c].focus_set()
-        if self.overlay.winfo_ismapped(): self.overlay.lift()
         if hasattr(self.frames[c], 'refresh'): self.after(50, self.frames[c].refresh)
 
     def toggle_stats_overlay(self, show):
@@ -514,11 +560,7 @@ class App(tk.Tk):
                 import psutil
                 with open("/sys/class/thermal/thermal_zone0/temp") as f:
                     t = int(f.read()) / 1000
-                ram = psutil.virtual_memory().percent
-                pwr = os.popen('vcgencmd get_throttled').read().split('=')[1].strip()
-                self.overlay.config(
-                    text=f"CPU:{psutil.cpu_percent()}%|RAM:{ram}%|{t:.0f}°|PWR:{'OK' if pwr == '0x0' else 'LOW'}",
-                    fg="green" if pwr == "0x0" else "red")
+                self.overlay.config(text=f"CPU:{psutil.cpu_percent()}%|{t:.0f}°")
             except:
                 pass
             self.after(6000, self.update_ov)
@@ -526,8 +568,7 @@ class App(tk.Tk):
     def play_track(self, pl, i, p):
         self.playlist, self.idx, self.path, self.is_paused = pl, i, p, False
         try:
-            pygame.mixer.music.load(os.path.join(p, pl[i]))
-            pygame.mixer.music.set_volume(self.frames[NowPlaying].vol_level);
+            pygame.mixer.music.load(os.path.join(p, pl[i]));
             pygame.mixer.music.play()
             if self.current_screen != NowPlaying: self.show_frame(NowPlaying)
         except:
