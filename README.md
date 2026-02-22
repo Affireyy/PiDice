@@ -13,6 +13,7 @@ PiDice is a specialized, lightweight media player and networking utility designe
 * **Responsive Scaling**: Utilizes dynamic geometry management (`winfo_screenwidth`) to automatically fit the resolution of the connected display.
 * **Coverflow Browser**: A Canvas-driven, 3-panel interactive carousel for navigating album folders.
 * **System Telemetry**: Integrated TopBar displaying live CPU utilization and core temperature readings.
+* **Disclamer**: The software is made for a 800x480 display so it may look a little weird on 1080p.
 
 ### Performance Management
 * **Frame Rate Control**: User-configurable FPS cap (5–30 FPS) via the Settings menu to manage power and heat.
