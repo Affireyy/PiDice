@@ -16,7 +16,6 @@ from datetime import datetime
 import zoneinfo
 
 # --- HARDWARE & ENVIRONMENT CONFIGURATION ---
-# Force the modern GPIO factory for Raspberry Pi compatibility
 os.environ['GPIOZERO_PIN_FACTORY'] = 'lgpio'
 try:
     from gpiozero import Button as PhysicalButton
@@ -24,8 +23,8 @@ except ImportError:
     PhysicalButton = None
 
 # --- UI STYLING CONSTANTS ---
-BG = "#2B2B2B"  # Dark Charcoal Background
-FG = "#FF8200"  # Vibrant Orange Foreground/Accent
+BG = "#2B2B2B"
+FG = "#FF8200"
 
 
 # --- UTILITIES ---
@@ -51,26 +50,20 @@ def get_single_song_art(song_path):
 # --- UI COMPONENTS & SCREENS ---
 
 class TopBar(tk.Frame):
-    """ persistent header displaying time, CPU usage, and temperature. """
-
     def __init__(self, parent, controller):
         super().__init__(parent, bg=FG, height=30)
         self.ctrl = controller
         self.pack_propagate(False)
 
-        # Left-aligned clock
         self.lbl_time = tk.Label(self, font=("Courier", 12, "bold"), bg=FG, fg=BG)
         self.lbl_time.pack(side="left", padx=20)
 
-        # Right-aligned system stats
         self.lbl_stats = tk.Label(self, font=("Courier", 10, "bold"), bg=FG, fg=BG)
         self.lbl_stats.pack(side="right", padx=20)
 
         self.update_bar()
 
     def update_bar(self):
-        """ Periodically updates time and hardware telemetry. """
-        # Set clock to Swedish timezone
         try:
             tz = zoneinfo.ZoneInfo("Europe/Stockholm")
             now = datetime.now(tz)
@@ -80,7 +73,6 @@ class TopBar(tk.Frame):
 
         self.lbl_time.config(text=t_str)
 
-        # Fetch CPU utilization and thermal data
         try:
             import psutil
             cpu = psutil.cpu_percent()
@@ -94,11 +86,38 @@ class TopBar(tk.Frame):
 
 
 class MP3Menu(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, bg=BG)
+        self.ctrl = controller
+        self.view_mode = "playlists"
+        self.playlists = []
+        self.cur_idx = 0
+        self.sel_folder = ""
+        self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+
+    def refresh(self):
+        for widget in self.winfo_children():
+            widget.destroy()
+        if self.view_mode == "playlists":
+            self.show_playlists()
+        else:
+            self.show_songs_view()
+
+    def show_playlists(self):
+        path = "/home/dietpi/pidice/MP3s/"
+        try:
+            self.playlists = natural_sort([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
+        except:
+            self.playlists = []
+
+        self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, width=self.ctrl.screen_w, height=self.ctrl.screen_h)
+        self.canvas.pack()
+        self.draw_coverflow()
+
     def draw_coverflow(self):
         self.canvas.delete("all")
         if not self.playlists: return
 
-        # Use dynamic screen centers
         center_x = self.ctrl.screen_w // 2
         center_y = (self.ctrl.screen_h // 2) - 40
 
@@ -106,57 +125,108 @@ class MP3Menu(tk.Frame):
 
         for i, idx in enumerate(indices):
             folder = self.playlists[idx]
-            # Scaling images based on screen width
             scale_factor = self.ctrl.screen_w / 800
             size = (int(300 * scale_factor), int(300 * scale_factor)) if i == 1 else (int(200 * scale_factor),
                                                                                       int(200 * scale_factor))
 
-            # Dynamic spacing
             offset = int(250 * scale_factor)
             x = center_x if i == 1 else (center_x - offset if i == 0 else center_x + offset)
 
             p = os.path.join("/home/dietpi/pidice/MP3s/", folder, "cover.png")
 
-            try:
-                img = Image.open(p) if os.path.exists(p) else Image.new('RGB', size, color='#111')
-                img = img.resize(size, Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(img)
-                self.canvas.create_image(x, center_y, image=photo)
-                if i == 0:
-                    self.img0 = photo
-                elif i == 1:
-                    self.img1 = photo
-                else:
-                    self.img2 = photo
-            except:
-                pass
+            # Use Cache to stop the lag
+            cache_key = (p, size)
+            if cache_key in self.ctrl.img_cache:
+                photo = self.ctrl.img_cache[cache_key]
+            else:
+                try:
+                    img = Image.open(p) if os.path.exists(p) else Image.new('RGB', size, color='#111')
+                    img = img.resize(size, Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(img)
+                    self.ctrl.img_cache[cache_key] = photo
+                except:
+                    continue
+
+            self.canvas.create_image(x, center_y, image=photo)
+            if i == 0:
+                self.img0 = photo
+            elif i == 1:
+                self.img1 = photo
+            else:
+                self.img2 = photo
 
         self.canvas.create_text(center_x, center_y + int(200 * scale_factor),
                                 text=self.playlists[self.cur_idx].upper(),
                                 font=("Courier", int(18 * scale_factor), "bold"), fill=FG)
 
+    def show_songs_view(self):
+        tk.Label(self, text=f"FOLDER: {self.sel_folder}", font=("Courier", 16, "bold"), bg=BG, fg=FG).pack(pady=10)
+        path = os.path.join("/home/dietpi/pidice/MP3s/", self.sel_folder)
+        try:
+            songs = natural_sort([f for f in os.listdir(path) if f.endswith(".mp3")])
+        except:
+            songs = []
+
+        self.btns = []
+        for i, s in enumerate(songs):
+            btn = tk.Button(self, text=s.replace(".mp3", ""), font=("Courier", 12), bg=BG, fg=FG, bd=0,
+                            command=lambda s_list=songs, idx=i, p=path: self.ctrl.play_track(s_list, idx, p))
+            btn.pack(pady=2, fill="x", padx=50)
+            self.btns.append(btn)
+
+        back = tk.Button(self, text="BACK", font=("Courier", 12, "bold"), bg=BG, fg=FG, bd=0,
+                         command=self.back_to_playlists)
+        back.pack(pady=20)
+        self.btns.append(back)
+        self.update_visuals()
+
+    def back_to_playlists(self):
+        self.view_mode = "playlists"
+        self.refresh()
+
+    def move(self, d, is_vertical=False):
+        if self.view_mode == "playlists":
+            if not is_vertical:  # Only move left/right in coverflow
+                if self.playlists:
+                    self.cur_idx = (self.cur_idx + d) % len(self.playlists)
+                    self.draw_coverflow()
+        else:
+            if self.btns:
+                self.cur_idx = (self.cur_idx + d) % len(self.btns)
+                self.update_visuals()
+
+    def select(self):
+        if self.view_mode == "playlists":
+            if self.playlists:
+                self.sel_folder = self.playlists[self.cur_idx]
+                self.view_mode = "songs"
+                self.cur_idx = 0
+                self.refresh()
+        else:
+            if self.btns:
+                self.btns[self.cur_idx].invoke()
+
+    def update_visuals(self):
+        for i, b in enumerate(self.btns):
+            b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
+
 
 class NowPlaying(tk.Frame):
-    """ Playback interface displaying current track details and controls. """
-
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.ctrl = controller
-        self.cur_idx = 1  # Start focus on the Play/Pause button
+        self.cur_idx = 1
 
         self.grid_columnconfigure((0, 1), weight=1)
-        # Album Art Display
         self.cover_label = tk.Label(self, bg=BG)
         self.cover_label.grid(row=0, column=0, sticky="nsew", padx=20)
 
-        # Song info and controls container
         self.info = tk.Frame(self, bg=BG)
         self.info.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
 
         self.title = tk.Label(self.info, text="Song Name", font=("Courier", 18, "bold"), bg=BG, fg=FG, wraplength=300)
         self.title.pack(pady=10)
 
-        # Progress Bar section
         self.t_frm = tk.Frame(self.info, bg=BG)
         self.t_frm.pack(fill="x")
 
@@ -167,7 +237,6 @@ class NowPlaying(tk.Frame):
         self.t_lbl = tk.Label(self.t_frm, text="-0:00", font=("Courier", 10), bg=BG, fg=FG, width=6)
         self.t_lbl.pack(side="right")
 
-        # Volume Bar section
         self.v_frm = tk.Frame(self.info, bg=BG)
         self.v_frm.pack(fill="x", pady=10)
 
@@ -178,7 +247,6 @@ class NowPlaying(tk.Frame):
         self.v_lbl = tk.Label(self.v_frm, text="50%", font=("Courier", 10), bg=BG, fg=FG, width=6)
         self.v_lbl.pack(side="right")
 
-        # Playback Buttons (Prev, Toggle, Next, Repeat, Back)
         self.btn_f = tk.Frame(self.info, bg=BG)
         self.btn_f.pack(pady=10)
 
@@ -192,7 +260,6 @@ class NowPlaying(tk.Frame):
             self.btns.append(btn)
 
     def refresh(self):
-        """ Updates song title, album art, and button states. """
         if not self.ctrl.playlist:
             self.title.config(text="NOTHING IS PLAYING")
             self.cover_label.config(image="", text="")
@@ -200,7 +267,6 @@ class NowPlaying(tk.Frame):
             song_file = self.ctrl.playlist[self.ctrl.idx]
             self.title.config(text=song_file.replace(".mp3", ""))
             img = None
-            # Check for specific metadata tags or local cover image
             if "(METADATA)" in self.ctrl.path.upper():
                 img = get_single_song_art(os.path.join(self.ctrl.path, song_file))
             else:
@@ -225,7 +291,6 @@ class NowPlaying(tk.Frame):
         self.update_visuals()
 
     def update_ui_loop(self):
-        """ Updates the playback timer and progress bar every second. """
         self.btns[1].config(text="PLAY" if self.ctrl.is_paused else "PAUSE")
         if pygame.mixer.music.get_busy():
             try:
@@ -237,41 +302,39 @@ class NowPlaying(tk.Frame):
                 self.t_lbl.config(text=f"-{m}:{s:02d}")
             except:
                 pass
-        # Only schedule updates if the screen is active
         if self.ctrl.current_screen == NowPlaying:
             self.after(1000, self.update_ui_loop)
 
     def update_vol_bar(self):
-        """ Syncs the volume bar visualization with system volume settings. """
         ratio = self.ctrl.vol_level / 0.5
         self.v_can.coords(self.v_bar, 0, 0, ratio * self.v_can.winfo_width(), 10)
         self.v_lbl.config(text=f"{int(ratio * 100)}%")
 
-    def change_volume(self, d):
-        """ Adjusts volume and saves the new setting to disk. """
-        self.ctrl.vol_level = max(0.0, min(0.5, self.ctrl.vol_level + (d * 0.025)))
-        pygame.mixer.music.set_volume(self.ctrl.vol_level)
-        self.update_vol_bar()
-        self.ctrl.save_settings()
+    def move(self, d, is_vertical=False):
+        if is_vertical:
+            # Vertical adjusts volume
+            self.ctrl.vol_level = max(0, min(0.5, self.ctrl.vol_level + (d * -0.05)))
+            pygame.mixer.music.set_volume(self.ctrl.vol_level)
+            self.update_vol_bar()
+            self.ctrl.save_settings()
+        else:
+            # Horizontal navigates buttons
+            self.cur_idx = (self.cur_idx + d) % len(self.btns)
+            self.update_visuals()
+
+    def select(self):
+        self.btns[self.cur_idx].invoke()
+
+    def update_visuals(self):
+        for i, b in enumerate(self.btns):
+            b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
 
     def toggle_repeat(self):
-        """ Toggles track/playlist repetition. """
         self.ctrl.repeat_state = not self.ctrl.repeat_state
         self.btns[3].config(text=f"REPEAT: {'ON' if self.ctrl.repeat_state else 'OFF'}")
         self.ctrl.save_settings()
 
-    def move(self, d, is_vertical=True):
-        """ Cycles focus through the playback buttons. """
-        self.cur_idx = (self.cur_idx + d) % len(self.btns)
-        self.update_visuals()
-
-    def update_visuals(self):
-        """ Highlights the selected button. """
-        for i, b in enumerate(self.btns):
-            b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
-
     def toggle(self):
-        """ Play/Pause functionality. """
         if self.ctrl.is_paused:
             pygame.mixer.music.unpause()
             self.ctrl.is_paused = False
@@ -280,18 +343,13 @@ class NowPlaying(tk.Frame):
             self.ctrl.is_paused = True
 
     def next(self):
-        """ Skips to the next track. """
         if self.ctrl.playlist:
-            if self.ctrl.idx < len(self.ctrl.playlist) - 1:
-                n = self.ctrl.idx + 1
-            else:
-                n = 0 if self.ctrl.repeat_state else self.ctrl.idx
-            if n != self.ctrl.idx or self.ctrl.repeat_state:
-                self.ctrl.play_track(self.ctrl.playlist, n, self.ctrl.path)
-                self.refresh()
+            n = (self.ctrl.idx + 1) if self.ctrl.idx < len(self.ctrl.playlist) - 1 else (
+                0 if self.ctrl.repeat_state else self.ctrl.idx)
+            self.ctrl.play_track(self.ctrl.playlist, n, self.ctrl.path)
+            self.refresh()
 
     def prev(self):
-        """ Goes back to the previous track. """
         if self.ctrl.playlist:
             n = max(0, self.ctrl.idx - 1)
             self.ctrl.play_track(self.ctrl.playlist, n, self.ctrl.path)
@@ -299,146 +357,110 @@ class NowPlaying(tk.Frame):
 
 
 class SettingsMenu(tk.Frame):
-    """ Interface for hardware and app configuration. """
-
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.ctrl = controller
         self.cur_idx, self.view = 0, "main"
         self.btns = []
-
-        # Top status line
         self.stats_lbl = tk.Label(self, text="CPU: --% | --°C", font=("Courier", 10), bg=BG, fg=FG)
         self.stats_lbl.pack(pady=10)
-
         self.menu_container = tk.Frame(self, bg=BG)
         self.menu_container.pack(fill="both", expand=True)
 
     def refresh(self):
-        """ Rebuilds the settings view. """
         self.show_main_settings()
         self.update_stats()
 
     def clear_menu(self):
-        """ Destroys existing widgets before rendering a new submenu. """
-        for widget in self.menu_container.winfo_children():
-            widget.destroy()
+        for widget in self.menu_container.winfo_children(): widget.destroy()
         self.btns, self.cur_idx = [], 0
 
     def show_main_settings(self):
-        """ Renders the root settings options. """
-        self.view = "main";
+        self.view = "main"
         self.clear_menu()
-        opts = [
-            ("SYSTEM", self.show_system),
-            ("AUDIO", self.show_audio),
-            ("PLAYLISTS", self.show_playlists),
-            ("NETWORK", lambda: self.ctrl.show_frame(NetworkLibrary)),
-            ("BACK", lambda: self.ctrl.show_frame(MP3Menu))
-        ]
+        opts = [("SYSTEM", self.show_system), ("AUDIO", self.show_audio), ("PLAYLISTS", self.show_playlists),
+                ("NETWORK", lambda: self.ctrl.show_frame(NetworkLibrary)),
+                ("BACK", lambda: self.ctrl.show_frame(MP3Menu))]
         self.build_btns(opts)
-
-    def show_system(self):
-        """ Renders hardware power and performance options. """
-        self.view = "system";
-        self.clear_menu()
-        sl_text = f"SLEEP: {self.ctrl.sleep_opts[self.ctrl.sleep_idx]}"
-        fps_text = f"FPS CAP: {self.ctrl.fps_cap}"
-        opts = [
-            (sl_text, self.cycle_sl),
-            (fps_text, self.cycle_fps),
-            ("REBOOT", lambda: os.system("sudo reboot")),
-            ("SHUTDOWN", lambda: os.system("sudo poweroff")),
-            ("RESTART APP", self.ctrl.restart_app),
-            ("BACK", self.show_main_settings)
-        ]
-        self.build_btns(opts)
-
-    def show_audio(self):
-        """ Renders audio output routing options. """
-        self.view = "audio";
-        self.clear_menu()
-        out_mode = "3.5mm" if self.ctrl.audio_output == "jack" else "BT"
-        opts = [
-            (f"OUTPUT: {out_mode}", self.toggle_output),
-            ("BACK", self.show_main_settings)
-        ]
-        self.build_btns(opts)
-
-    def show_playlists(self):
-        """ Renders a list of folders with a delete option. """
-        self.view = "playlists";
-        self.clear_menu()
-        path = "/home/dietpi/pidice/MP3s/"
-        try:
-            dirs = natural_sort([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
-        except:
-            dirs = []
-        for folder in dirs:
-            b = tk.Button(self.menu_container, text=f"DELETE: {folder}", font=("Courier", 10), bg=BG, fg="red",
-                          command=lambda n=folder: self.remove_playlist(n))
-            b.pack(pady=2, fill="x", padx=50);
-            self.btns.append(b)
-
-        back_btn = tk.Button(self.menu_container, text="BACK", font=("Courier", 10), bg=BG, fg=FG,
-                             command=self.show_main_settings)
-        back_btn.pack(pady=10);
-        self.btns.append(back_btn)
-        self.update_visuals()
 
     def build_btns(self, opts):
-        """ Utility to create standardized menu buttons. """
         for text, cmd in opts:
             b = tk.Button(self.menu_container, text=text, font=("Courier", 10), bg=BG, fg=FG, bd=0, command=cmd)
             b.pack(pady=3, fill="x", padx=100)
             self.btns.append(b)
         self.update_visuals()
 
+    def show_system(self):
+        self.view = "system"
+        self.clear_menu()
+        opts = [(f"SLEEP: {self.ctrl.sleep_opts[self.ctrl.sleep_idx]}", self.cycle_sl),
+                (f"FPS CAP: {self.ctrl.fps_cap}", self.cycle_fps), ("REBOOT", lambda: os.system("sudo reboot")),
+                ("SHUTDOWN", lambda: os.system("sudo poweroff")), ("BACK", self.show_main_settings)]
+        self.build_btns(opts)
+
+    def show_audio(self):
+        self.view = "audio"
+        self.clear_menu()
+        opts = [(f"OUTPUT: {'3.5mm' if self.ctrl.audio_output == 'jack' else 'BT'}", self.toggle_output),
+                ("BACK", self.show_main_settings)]
+        self.build_btns(opts)
+
+    def show_playlists(self):
+        self.view = "playlists"
+        self.clear_menu()
+        path = "/home/dietpi/pidice/MP3s/"
+        try:
+            dirs = natural_sort([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
+        except:
+            dirs = []
+        for f in dirs:
+            b = tk.Button(self.menu_container, text=f"DELETE: {f}", font=("Courier", 10), bg=BG, fg="red",
+                          command=lambda n=f: self.remove_playlist(n))
+            b.pack(pady=2, fill="x", padx=50);
+            self.btns.append(b)
+        bk = tk.Button(self.menu_container, text="BACK", font=("Courier", 10), bg=BG, fg=FG,
+                       command=self.show_main_settings)
+        bk.pack(pady=10);
+        self.btns.append(bk)
+        self.update_visuals()
+
     def cycle_sl(self):
-        """ Cycles through sleep timer presets. """
         self.ctrl.sleep_idx = (self.ctrl.sleep_idx + 1) % len(self.ctrl.sleep_opts)
-        self.ctrl.save_settings()
+        self.ctrl.save_settings();
         self.show_system()
 
     def cycle_fps(self):
-        """ Cycles through FPS cap limits for power management. """
-        fps_opts = [5, 10, 15, 20, 25, 30]
-        try:
-            curr_idx = fps_opts.index(self.ctrl.fps_cap)
-            self.ctrl.fps_cap = fps_opts[(curr_idx + 1) % len(fps_opts)]
-        except:
-            self.ctrl.fps_cap = 30
-        self.ctrl.save_settings()
+        opts = [5, 10, 15, 20, 25, 30]
+        self.ctrl.fps_cap = opts[(opts.index(self.ctrl.fps_cap) + 1) % len(opts)] if self.ctrl.fps_cap in opts else 30
+        self.ctrl.save_settings();
         self.show_system()
 
     def toggle_output(self):
-        """ Switches between headphone jack and Bluetooth output. """
         self.ctrl.audio_output = "bt" if self.ctrl.audio_output == "jack" else "jack"
-        self.ctrl.save_settings()
+        self.ctrl.save_settings();
         self.show_audio()
 
     def remove_playlist(self, name):
-        """ Deletes a playlist folder from the filesystem. """
         if messagebox.askyesno("Confirm", f"Delete {name}?"):
             try:
-                shutil.rmtree(os.path.join("/home/dietpi/pidice/MP3s/", name))
-                self.show_playlists()
+                shutil.rmtree(os.path.join("/home/dietpi/pidice/MP3s/", name)); self.show_playlists()
             except:
                 pass
 
     def move(self, d, is_vertical=True):
-        """ Cycles menu focus. """
         if self.btns:
             self.cur_idx = (self.cur_idx + d) % len(self.btns)
             self.update_visuals()
 
+    def select(self):
+        if self.btns:
+            self.btns[self.cur_idx].invoke()
+
     def update_visuals(self):
-        """ Updates button highlighting. """
         for i, b in enumerate(self.btns):
             b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
 
     def update_stats(self):
-        """ Background task to update telemetry in the settings header. """
         try:
             import psutil
             with open("/sys/class/thermal/thermal_zone0/temp") as f:
@@ -446,13 +468,10 @@ class SettingsMenu(tk.Frame):
             self.stats_lbl.config(text=f"CPU: {psutil.cpu_percent()}% | {t:.1f}°C")
         except:
             pass
-        if self.ctrl.current_screen == SettingsMenu:
-            self.after(5000, self.update_stats)
+        if self.ctrl.current_screen == SettingsMenu: self.after(5000, self.update_stats)
 
 
 class NetworkLibrary(tk.Frame):
-    """ Menu for network-based library management. """
-
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.ctrl = controller
@@ -460,7 +479,6 @@ class NetworkLibrary(tk.Frame):
         self.btns = []
 
     def refresh(self):
-        """ Renders network options. """
         for widget in self.winfo_children(): widget.destroy()
         self.btns = []
         tk.Label(self, text="NETWORK LIBRARY", font=("Courier", 20, "bold"), bg=BG, fg=FG).pack(pady=40)
@@ -475,114 +493,141 @@ class NetworkLibrary(tk.Frame):
     def move(self, d, is_vertical=True):
         if self.btns: self.cur_idx = (self.cur_idx + d) % len(self.btns); self.update_visuals()
 
+    def select(self):
+        if self.btns: self.btns[self.cur_idx].invoke()
+
     def update_visuals(self):
         for i, b in enumerate(self.btns):
             b.config(bg=FG if i == self.cur_idx else BG, fg=BG if i == self.cur_idx else FG)
 
 
-# --- CORE APPLICATION LOGIC ---
-
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-
-        # Set process priority for audio stability
         try:
             os.nice(-10)
         except:
             pass
-
-            # Initialize audio engine with high-buffer settings
         pygame.mixer.pre_init(44100, -16, 2, 4096)
         pygame.mixer.init()
-
         self.settings_file = "/home/dietpi/pidice/settings.json"
 
-        # Load user preferences (Volume, FPS, etc.)
+        # Initialize Image Cache
+        self.img_cache = {}
+
         self.load_settings()
-
-        # Dynamic Window Configuration
-        # This allows the app to fit any screen resolution automatically
         self.attributes("-fullscreen", True)
-        self.update_idletasks()  # Ensure window properties are loaded
-        self.screen_w = self.winfo_screenwidth()
-        self.screen_h = self.winfo_screenheight()
-
+        self.update_idletasks()
+        self.screen_w, self.screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
         self.configure(bg=BG)
-        self.config(highlightthickness=1, highlightbackground=FG)
-
         self.current_screen = None
         self.playlist, self.idx, self.path = [], 0, ""
         self.is_paused = False
         self.sleep_opts = ["OFF", "15m", "30m", "1h"]
-
-        # Main Layout Components
         self.top_bar = TopBar(self, self)
         self.top_bar.pack(side="top", fill="x")
-
         self.container = tk.Frame(self, bg=BG)
         self.container.pack(side="top", fill="both", expand=True)
-
-        # Initialize screen frames
         self.frames = {}
         for F in (MP3Menu, NowPlaying, SettingsMenu, NetworkLibrary):
             frame = F(self.container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
-
-        self.bind("<Key>", self.handle_keys)
         self.show_frame(MP3Menu)
+        self.bind("<Key>", self.handle_keys)
         self.check_music()
 
+    def show_frame(self, cont):
+        frame = self.frames[cont]
+        self.current_screen = cont
+        frame.tkraise()
+        if hasattr(frame, 'refresh'): frame.refresh()
+
+    def handle_keys(self, event):
+        """ Routes arrow keys and enter to the active screen. """
+        f = self.frames[self.current_screen]
+        key = event.keysym
+
+        # Horizontal Nav (Playlists/Buttons)
+        if key in ("Left", "KP_Left", "KP_4"):
+            f.move(-1, False)
+        elif key in ("Right", "KP_Right", "KP_6"):
+            f.move(1, False)
+
+        # Vertical Nav (Open Screens)
+        elif key in ("Up", "KP_Up", "KP_8"):
+            if self.current_screen == MP3Menu:
+                self.show_frame(SettingsMenu)
+            else:
+                f.move(-1, True)
+        elif key in ("Down", "KP_Down", "KP_2"):
+            if self.current_screen == MP3Menu:
+                self.show_frame(NowPlaying)
+            else:
+                f.move(1, True)
+
+        # Select/Enter
+        elif key in ("Return", "KP_Enter"):
+            if hasattr(f, 'select'): f.select()
+        elif key == "Escape":
+            self.show_frame(MP3Menu)
+
+    def play_track(self, playlist, index, path):
+        self.playlist, self.idx, self.path = playlist, index, path
+        pygame.mixer.music.load(os.path.join(path, playlist[index]))
+        pygame.mixer.music.set_volume(self.vol_level)
+        pygame.mixer.music.play()
+        self.is_paused = False
+        if self.current_screen != NowPlaying: self.show_frame(NowPlaying)
+
+    def check_music(self):
+        if not pygame.mixer.music.get_busy() and not self.is_paused and self.playlist:
+            if self.repeat_state or self.idx < len(self.playlist) - 1:
+                self.idx = (self.idx + 1) % len(self.playlist)
+                self.play_track(self.playlist, self.idx, self.path)
+                if self.current_screen == NowPlaying: self.frames[NowPlaying].refresh()
+        self.after(1000, self.check_music)
+
     def load_settings(self):
-        """ Reads configuration from disk or sets defaults. """
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, "r") as f:
-                    data = json.load(f)
-                self.vol_level = data.get("vol_level", 0.25)
-                self.repeat_state = data.get("repeat", False)
-                self.sleep_idx = data.get("sleep_idx", 0)
-                self.audio_output = data.get("audio_output", "jack")
-                self.fps_cap = data.get("fps_cap", 30)
+                    d = json.load(f)
+                self.vol_level = d.get("vol_level", 0.25)
+                self.repeat_state = d.get("repeat", False)
+                self.sleep_idx = d.get("sleep_idx", 0)
+                self.audio_output = d.get("audio_output", "jack")
+                self.fps_cap = d.get("fps_cap", 30)
             except:
                 self.set_defaults()
         else:
             self.set_defaults()
 
     def set_defaults(self):
-        """ Fallback values for application settings. """
         self.vol_level, self.repeat_state, self.sleep_idx = 0.25, False, 0
         self.audio_output, self.fps_cap = "jack", 30
 
     def save_settings(self):
-        """ Persists current user settings to JSON. """
-        data = {
-            "vol_level": self.vol_level,
-            "repeat": self.repeat_state,
-            "sleep_idx": self.sleep_idx,
-            "audio_output": self.audio_output,
-            "fps_cap": self.fps_cap
-        }
-        with open(self.settings_file, "w") as f:
-            json.dump(data, f)
+        d = {"vol_level": self.vol_level, "repeat": self.repeat_state, "sleep_idx": self.sleep_idx,
+             "audio_output": self.audio_output, "fps_cap": self.fps_cap}
+        with open(self.settings_file, "w") as f: json.dump(d, f)
 
 
-# --- MAIN EXECUTION LOOP ---
 if __name__ == "__main__":
-    app = App()
-    clock = pygame.time.Clock()
+    try:
+        app = App()
+        clock = pygame.time.Clock()
 
 
-    def run_loop():
-        """ Custom event loop to manage Tkinter updates and FPS capping. """
-        app.update_idletasks()
-        app.update()
+        def run_loop():
+            app.update_idletasks()
+            app.update()
+            clock.tick(app.fps_cap)
+            app.after(1, run_loop)
 
-        # Enforce FPS limit to keep CPU usage low
-        clock.tick(app.fps_cap)
+
         app.after(1, run_loop)
-
-
-    app.after(1, run_loop)
-    app.mainloop()
+        app.mainloop()
+    except Exception as e:
+        print(f"\n[FATAL ERROR]: {e}")
+        time.sleep(10)
