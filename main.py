@@ -2,7 +2,7 @@ import os
 import json
 import tkinter as tk
 import pygame
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 from mutagen.mp3 import MP3
 import re
 import time
@@ -186,7 +186,7 @@ class MP3Menu(tk.Frame):
         right_container.grid_rowconfigure(self.visible_count + 2, weight=1)
 
         self.p_name_lbl = tk.Label(right_container, text="", font=("Courier", 16, "bold underline"), bg=BG, fg=FG,
-                                   anchor="w")
+                                    anchor="w")
         self.p_name_lbl.grid(row=1, column=0, pady=(0, 10), sticky="ew")
 
         path = os.path.join("/home/dietpi/pidice/MP3s/", self.sel_folder)
@@ -198,7 +198,7 @@ class MP3Menu(tk.Frame):
         self.btns = []
         for i in range(self.visible_count):
             lbl = tk.Label(right_container, text="", font=("Courier", 14, "bold"), bg=BG, fg=FG, anchor="w", padx=10,
-                           width=self.MAX_CHARS)
+                            width=self.MAX_CHARS)
             lbl.grid(row=i + 2, column=0, pady=1, sticky="w")
             self.btns.append(lbl)
         self.update_list_display()
@@ -271,34 +271,30 @@ class MP3Menu(tk.Frame):
             self.refresh()
         elif self.view_mode == "songs" and self.songs:
             path = os.path.join("/home/dietpi/pidice/MP3s/", self.sel_folder)
-            self.ctrl.play_track(self.songs, self.cur_idx, path, force_switch=True)
+            # Match the App.play_track(playlist, index, path, increment) signature
+            self.ctrl.play_track(self.songs, self.cur_idx, path, increment=False)
 
 
 class NowPlaying(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=BG)
         self.ctrl = controller
-        self.cur_idx = 1  # Default to the Play/Pause button
-        self.vol_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        self.cur_idx = 1
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
 
-        # Left side: Album Art
         self.cover_label = tk.Label(self, bg=BG)
         self.cover_label.grid(row=0, column=0, padx=(0, 15), sticky="nw")
 
-        # Right side: Info and Controls
         self.info = tk.Frame(self, bg=BG)
         self.info.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
         self.info.grid_rowconfigure((0, 1, 2, 3), weight=0)
 
-        # Song Title
         self.title = tk.Label(self.info, text="SONG NAME", font=("Courier", 18, "bold"),
                               bg=BG, fg=FG, wraplength=400, justify="left", anchor="w")
         self.title.grid(row=0, column=0, columnspan=2, sticky="sw", pady=(5, 1))
 
-        # Progress Bar
         self.p_can = tk.Canvas(self.info, width=320, height=12, bg="#111", highlightthickness=0)
         self.p_can.grid(row=1, column=0, sticky="w", pady=1)
         self.p_bar = self.p_can.create_rectangle(0, 0, 0, 12, fill=FG)
@@ -306,7 +302,6 @@ class NowPlaying(tk.Frame):
         self.t_lbl = tk.Label(self.info, text="0:00/0:00", font=("Courier", 11), bg=BG, fg=FG)
         self.t_lbl.grid(row=1, column=1, sticky="w", padx=5)
 
-        # Volume Bar
         self.v_can = tk.Canvas(self.info, width=320, height=12, bg="#111", highlightthickness=0)
         self.v_can.grid(row=2, column=0, sticky="w", pady=1)
         self.v_bar = self.v_can.create_rectangle(0, 0, 0, 12, fill=FG)
@@ -314,7 +309,6 @@ class NowPlaying(tk.Frame):
         self.v_lbl = tk.Label(self.info, text="100%", font=("Courier", 11), bg=BG, fg=FG)
         self.v_lbl.grid(row=2, column=1, sticky="w", padx=5)
 
-        # Control Buttons Frame
         self.btn_f = tk.Frame(self.info, bg=BG)
         self.btn_f.grid(row=3, column=0, columnspan=2, sticky="nw", pady=(10, 0))
 
@@ -332,83 +326,67 @@ class NowPlaying(tk.Frame):
             btn.grid(row=0, column=i, padx=6)
             self.btns.append(btn)
 
+    def move(self, d, is_vertical=False):
+        if is_vertical:
+            # UP/DOWN = VOLUME PRESETS
+            # We use -d because GPIO 'Up' sends -1, and we want to go 'up' the list
+            self.ctrl.adjust_volume(-d)
+        else:
+            # LEFT/RIGHT = BUTTON NAVIGATION
+            new_idx = self.cur_idx + d
+            if new_idx < 0 or new_idx >= len(self.btns):
+                # Edge reached: Go back to Menu
+                self.ctrl.show_frame("MP3Menu")
+            else:
+                self.cur_idx = new_idx
+                self.update_visuals()
+
+    def update_vol_bar(self):
+        vol_val = self.ctrl.vol_presets[self.ctrl.vol_idx]
+        self.v_can.coords(self.v_bar, 0, 0, (vol_val / 100.0) * 320, 12)
+        self.v_lbl.config(text=f"{vol_val}%")
+
+    def select(self):
+        self.btn_data[self.cur_idx]["cmd"]()
+
     def refresh(self):
         if not self.ctrl.playlist: return
         song_file = self.ctrl.playlist[self.ctrl.idx]
         self.title.config(text=song_file.replace(".mp3", "").upper())
 
-        # Load Cover Art
         img_p = os.path.join(self.ctrl.path, "cover.png")
         if os.path.exists(img_p):
             try:
                 img = Image.open(img_p).resize((360, 360), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
-                self.cover_label.config(image=photo, text="")
+                self.cover_label.config(image=photo)
                 self.cover_label.image = photo
             except:
-                self.cover_label.config(image="", text="[ IMAGE ERROR ]")
-        else:
-            self.cover_label.config(image="", text="[ NO COVER ]")
+                pass
 
         self.update_vol_bar()
         self.update_visuals()
         self.update_ui_loop()
 
     def update_visuals(self):
-        """Updates the look of the control buttons based on state and selection"""
-        # Update Play/Pause icon
         icon = "▶" if self.ctrl.is_paused else "⏸"
         self.btns[1].config(text=icon)
-
         for i, btn in enumerate(self.btns):
             if i == self.cur_idx:
-                btn.config(bg=FG, fg=BG)  # Highlighted
+                btn.config(bg=FG, fg=BG)
             elif i == 3 and self.ctrl.repeat_state:
-                btn.config(bg=FG, fg=BG)  # Repeat Active
+                btn.config(bg=FG, fg=BG)
             else:
-                btn.config(bg=BG, fg=FG)  # Idle
-
-    def move(self, d, is_vertical=False):
-        """Unified move command for both GPIO and Keyboard"""
-        if is_vertical:
-            # UP/DOWN handles Volume
-            self.ctrl.vol_level = max(0.0, min(1.0, self.ctrl.vol_level + (-d * 0.05)))
-            pygame.mixer.music.set_volume(self.ctrl.vol_level)
-            self.update_vol_bar()
-        else:
-            # LEFT/RIGHT handles Button Selection
-            new_idx = self.cur_idx + d
-            if new_idx < 0:
-                # Swipe Left from the first button to go back to Menu
-                self.ctrl.show_frame("MP3Menu")
-            elif new_idx >= len(self.btns):
-                pass  # End of buttons
-            else:
-                self.cur_idx = new_idx
-                self.update_visuals()
-
-    def select(self):
-        """MIDDLE/RETURN executes the highlighted button's command"""
-        self.btn_data[self.cur_idx]["cmd"]()
-
-    def update_vol_bar(self):
-        perc = round(self.ctrl.vol_level * 100)
-        self.v_can.coords(self.v_bar, 0, 0, (perc / 100.0) * 320, 12)
-        self.v_lbl.config(text=f"{perc}%")
+                btn.config(bg=BG, fg=FG)
 
     def update_ui_loop(self):
-        """Background loop to update the seek bar and time labels"""
         if self.ctrl.current_screen != "NowPlaying": return
         if pygame.mixer.music.get_busy() or self.ctrl.is_paused:
             try:
-                from mutagen.mp3 import MP3
                 path = os.path.join(self.ctrl.path, self.ctrl.playlist[self.ctrl.idx])
                 total = MP3(path).info.length
                 curr = pygame.mixer.music.get_pos() / 1000.0
-
-                # Check for negative pos (mixer bug sometimes)
                 if curr < 0: curr = 0
-
                 self.p_can.coords(self.p_bar, 0, 0, min(1.0, curr / total) * 320, 12)
                 self.t_lbl.config(
                     text=f"{int(curr // 60)}:{int(curr % 60):02d}/{int(total // 60)}:{int(total % 60):02d}")
@@ -418,11 +396,9 @@ class NowPlaying(tk.Frame):
 
     def toggle(self):
         if self.ctrl.is_paused:
-            pygame.mixer.music.unpause()
-            self.ctrl.is_paused = False
+            pygame.mixer.music.unpause(); self.ctrl.is_paused = False
         else:
-            pygame.mixer.music.pause()
-            self.ctrl.is_paused = True
+            pygame.mixer.music.pause(); self.ctrl.is_paused = True
         self.update_visuals()
 
     def toggle_repeat(self):
@@ -430,12 +406,12 @@ class NowPlaying(tk.Frame):
         self.update_visuals()
 
     def next(self):
-        next_idx = (self.ctrl.idx + 1) % len(self.ctrl.playlist)
-        self.ctrl.play_track(self.ctrl.playlist, next_idx, self.ctrl.path)
+        n = (self.ctrl.idx + 1) % len(self.ctrl.playlist)
+        self.ctrl.play_track(self.ctrl.playlist, n, self.ctrl.path)
 
     def prev(self):
-        prev_idx = (self.ctrl.idx - 1) % len(self.ctrl.playlist)
-        self.ctrl.play_track(self.ctrl.playlist, prev_idx, self.ctrl.path)
+        n = (self.ctrl.idx - 1) % len(self.ctrl.playlist)
+        self.ctrl.play_track(self.ctrl.playlist, n, self.ctrl.path)
 
 
 class SettingsMenu(tk.Frame):
@@ -444,6 +420,7 @@ class SettingsMenu(tk.Frame):
         self.ctrl = controller
         self.cur_idx = 0
         self.btns = []
+        self.bt_mode = "INPUT"
         self.menu_container = tk.Frame(self, bg=BG)
         self.menu_container.pack(fill="both", expand=True, pady=10)
 
@@ -460,113 +437,87 @@ class SettingsMenu(tk.Frame):
         opts = [
             ("⚙ SYSTEM", self.show_system),
             ("🔊 AUDIO", self.show_audio),
-            ("🔄 NETWORK", lambda: self.ctrl.show_frame("NetworkBLEMenu")),
+            ("🔄 NETWORK", self.show_network_bt),
             ("⬅ BACK", lambda: self.ctrl.show_frame("MP3Menu"))
         ]
         self.build_btns(opts)
 
-    def show_system(self):
-        self.clear_menu()
-
-        # 1. Safely get variables
-        s_idx = getattr(self.ctrl, 'sleep_idx', 0)
-        s_opts = getattr(self.ctrl, 'sleep_opts', ["OFF"])
-        fps = getattr(self.ctrl, 'fps_cap', 30)
-        res = getattr(self.ctrl, 'resolution_mode', "800x480")
-        res_label = "NATIVE" if res == "native" else "800x480"
-
-        # 2. Define options
-        # Note: We use lambda for simple calls and functions for logic
-        opts = [
-            (f"SLEEP: {s_opts[s_idx]}", self.cycle_sl),
-            (f"FPS: {fps}", self.cycle_fps),
-            (f"RES: {res_label}", self.toggle_resolution),
-            ("REBOOT", lambda: os.system("sudo reboot")),
-            ("SHUTDOWN", lambda: os.system("sudo poweroff")),
-            ("RESTART APP", lambda: os.system("sudo systemctl restart pidice")),
-            ("⬅ BACK", self.show_main_settings)
-        ]
-
-        # 3. Draw them
-        self.build_btns(opts)
-
     def show_audio(self):
         self.clear_menu()
-        audio_out = getattr(self.ctrl, 'audio_output', 'jack')
-        out_mode = "3.5mm" if audio_out == "jack" else "BT"
+        devices = self.ctrl.get_system_outputs()
+        current = getattr(self.ctrl, 'audio_output', '3.5mm Jack')
+        opts = []
+        for d in devices:
+            label = f"● {d}" if d == current else f"○ {d}"
+            opts.append((label, lambda dev=d: self.select_audio_device(dev)))
+        opts.append(("⬅ BACK", self.show_main_settings))
+        self.build_btns(opts)
+
+    def select_audio_device(self, device):
+        self.ctrl.audio_output = device
+        self.ctrl.save_settings()
+        self.show_audio()
+
+    def show_network_bt(self):
+        self.clear_menu()
+        opts = [(f"BT MODE: {self.bt_mode}", self.toggle_bt_mode)]
+        if self.bt_mode == "OUTPUT":
+            devs = self.ctrl.get_bt_devices()
+            for name, mac in devs:
+                opts.append((f"PAIR: {name}", lambda m=mac: self.connect_bt(m)))
+        else:
+            opts.append(("STATUS: DISCOVERABLE", lambda: None))
+        opts.append(("⬅ BACK", self.show_main_settings))
+        self.build_btns(opts)
+
+    def toggle_bt_mode(self):
+        self.bt_mode = "OUTPUT" if self.bt_mode == "INPUT" else "INPUT"
+        self.ctrl.set_bt_mode(self.bt_mode)
+        self.show_network_bt()
+
+    def connect_bt(self, mac):
+        if mac:
+            subprocess.run(["bluetoothctl", "pair", mac])
+            subprocess.run(["bluetoothctl", "connect", mac])
+            self.show_network_bt()
+
+    def show_system(self):
+        self.clear_menu()
+        s_idx = self.ctrl.sleep_idx
+        s_opts = self.ctrl.sleep_opts
         opts = [
-            (f"OUTPUT: {out_mode}", self.toggle_output),
+            (f"SLEEP: {s_opts[s_idx]}", self.cycle_sl),
+            ("REBOOT", lambda: os.system("sudo reboot")),
+            ("SHUTDOWN", lambda: os.system("sudo poweroff")),
             ("⬅ BACK", self.show_main_settings)
         ]
         self.build_btns(opts)
 
     def build_btns(self, opts):
         for text, cmd in opts:
-            try:
-                b = tk.Button(self.menu_container, text=text, font=("Courier", 14, "bold"),
-                              bg=BG, fg=FG, activebackground=BG, activeforeground=FG,
-                              bd=0, command=cmd, height=1)
-                b.pack(pady=6, fill="x", padx=60)
-                self.btns.append(b)
-            except Exception as e:
-                print(f"Error building button {text}: {e}")
-
-        if self.btns:
-            self.update_visuals()
-
-    def toggle_resolution(self):
-        curr = getattr(self.ctrl, 'resolution_mode', "800x480")
-        self.ctrl.resolution_mode = "800x480" if curr == "native" else "native"
-        self.ctrl.save_settings()
-        self.show_system()
-
-    def toggle_output(self):
-        curr = getattr(self.ctrl, 'audio_output', 'jack')
-        self.ctrl.audio_output = "bt" if curr == "jack" else "jack"
-        self.ctrl.save_settings()
-        self.show_audio()
+            b = tk.Button(self.menu_container, text=text, font=("Courier", 14, "bold"),
+                          bg=BG, fg=FG, activebackground=BG, activeforeground=FG,
+                          bd=0, command=cmd, height=1)
+            b.pack(pady=4, fill="x", padx=60)
+            self.btns.append(b)
+        if self.btns: self.update_visuals()
 
     def cycle_sl(self):
-        curr_idx = getattr(self.ctrl, 'sleep_idx', 0)
-        opts_len = len(getattr(self.ctrl, 'sleep_opts', ["OFF"]))
-        self.ctrl.sleep_idx = (curr_idx + 1) % opts_len
-        self.ctrl.save_settings()
-        self.show_system()
-
-    def cycle_fps(self):
-        fps_opts = [5, 10, 15, 20, 25, 30]
-        curr_fps = getattr(self.ctrl, 'fps_cap', 30)
-        next_idx = (fps_opts.index(curr_fps) + 1) % len(fps_opts) if curr_fps in fps_opts else 0
-        self.ctrl.fps_cap = fps_opts[next_idx]
-        self.ctrl.save_settings()
-        self.show_system()
+        self.ctrl.sleep_idx = (self.ctrl.sleep_idx + 1) % len(self.ctrl.sleep_opts)
+        self.ctrl.save_settings(); self.show_system()
 
     def move(self, d, is_vertical=True):
         if is_vertical and self.btns:
             self.cur_idx = (self.cur_idx + d) % len(self.btns)
             self.update_visuals()
-        elif not is_vertical and d < 0:  # Left = Back
-            # If we aren't at the main menu, go back to main menu.
-            # If we are at main menu, go back to MP3.
-            has_back = False
-            for i, b in enumerate(self.btns):
-                if "BACK" in b.cget("text"):
-                    self.cur_idx = i
-                    self.select()
-                    has_back = True
-                    break
 
     def select(self):
-        if self.btns:
-            # Use after to prevent recursion issues during menu rebuilds
-            self.after(10, self.btns[self.cur_idx].invoke)
+        if self.btns: self.after(10, self.btns[self.cur_idx].invoke)
 
     def update_visuals(self):
         for i, b in enumerate(self.btns):
-            if i == self.cur_idx:
-                b.config(bg=FG, fg=BG, activebackground=FG, activeforeground=BG)
-            else:
-                b.config(bg=BG, fg=FG, activebackground=BG, activeforeground=FG)
+            if i == self.cur_idx: b.config(bg=FG, fg=BG)
+            else: b.config(bg=BG, fg=FG)
 
 
 class NetworkBLEMenu(tk.Frame):
@@ -589,22 +540,10 @@ class NetworkBLEMenu(tk.Frame):
     def show_main_network(self):
         self.clear_menu()
         opts = [
-            ("📡 WIFI STATUS", self.show_wifi_info),
             ("🔵 BLE PAIRING", self.start_ble_mode),
             ("⬅ BACK", lambda: self.ctrl.show_frame("SettingsMenu"))
         ]
         self.build_btns(opts)
-
-    def show_wifi_info(self):
-        try:
-            import subprocess
-            cmd = "hostname -I | cut -d' ' -f1"
-            ip = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
-            if not ip: ip = "NOT CONNECTED"
-        except:
-            ip = "ERROR"
-
-        CustomPopup(self.ctrl, "WIFI INFO", f"IP ADDRESS:\n{ip}")
 
     def start_ble_mode(self):
         self.ctrl.show_temporary_status("BLE SEARCHING...")
@@ -646,6 +585,113 @@ class NetworkBLEMenu(tk.Frame):
             else:
                 b.config(bg=BG, fg=FG, activebackground=BG, activeforeground=FG)
 
+    def set_screen_state(self, on=True):
+        """Turns the physical backlight on or off."""
+        try:
+            # Common path for Raspberry Pi/DSI screens
+            path = "/sys/class/backlight/10-0045/bl_power"  # Standard for many DSI displays
+            if not os.path.exists(path):
+                path = "/sys/class/backlight/rpi_backlight/bl_power"
+
+            val = "0" if on else "1"  # 0 is ON, 1 is OFF for bl_power
+            with open(path, "w") as f:
+                f.write(val)
+        except Exception as e:
+            # Fallback for HDMI or screens that support vcgencmd
+            state = "1" if on else "0"
+            os.system(f"vcgencmd display_power {state}")
+
+    def reset_sleep_timer(self, event=None):
+        """Resets the countdown every time a button is pressed."""
+        self.last_input_time = time.time()
+        if not self.screen_on:
+            self.screen_on = True
+            self.set_screen_state(True)
+
+    def check_sleep_timer(self):
+        """Background loop to check if we should dim the screen."""
+        if self.sleep_idx > 0:  # If not "OFF"
+            # Map "15S", "30S", "1M" etc to seconds
+            times = {"15S": 15, "30S": 30, "1M": 60, "2M": 120}
+            limit = times.get(self.sleep_opts[self.sleep_idx], 999)
+
+            if time.time() - self.last_input_time > limit and self.screen_on:
+                self.screen_on = False
+                self.set_screen_state(False)
+
+        self.after(1000, self.check_sleep_timer)
+
+    def set_screen_state(self, on=True):
+        """Fallback screen control for systems with no /sys/class/backlight/"""
+        try:
+            state = "1" if on else "0"
+            # Primary method: vcgencmd (Works on most DietPi/Pi setups)
+            os.system(f"vcgencmd display_power {state}")
+
+            # Secondary method: xset (Forces X11 to blank/unblank the screen)
+            # This is a safety net if vcgencmd doesn't trigger the backlight
+            x_state = "on" if on else "off"
+            os.system(f"DISPLAY=:0 xset dpms force {x_state}")
+        except Exception as e:
+            print(f"Screen Toggle Error: {e}")
+
+            class BluetoothMenu(tk.Frame):
+                def __init__(self, parent, controller):
+                    super().__init__(parent, bg=BG)
+                    self.ctrl = controller
+                    self.mode = "INPUT"  # Starts as Receiver
+                    self.devices = []
+                    self.cur_idx = 0
+                    self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+                    self.canvas.pack(fill="both", expand=True)
+
+                def refresh(self):
+                    self.draw_ui()
+
+                def draw_ui(self):
+                    self.canvas.delete("all")
+                    cx = self.ctrl.screen_w // 2
+
+                    # Mode Toggle Button
+                    color = FG if self.cur_idx == 0 else "#444"
+                    self.canvas.create_rectangle(cx - 100, 50, cx + 100, 100, outline=color, width=2)
+                    self.canvas.create_text(cx, 75, text=f"MODE: {self.mode}", fill=FG, font=("Courier", 16))
+
+                    if self.mode == "OUTPUT":
+                        self.canvas.create_text(cx, 130, text="--- AVAILABLE DEVICES ---", fill=FG,
+                                                font=("Courier", 12))
+                        for i, dev in enumerate(self.devices):
+                            y = 170 + (i * 40)
+                            text_color = BG if (i + 1) == self.cur_idx else FG
+                            bg_color = FG if (i + 1) == self.cur_idx else BG
+
+                            if (i + 1) == self.cur_idx:
+                                self.canvas.create_rectangle(100, y - 15, 700, y + 15, fill=FG)
+
+                            self.canvas.create_text(cx, y, text=dev['name'], fill=text_color, font=("Courier", 14))
+                    else:
+                        self.canvas.create_text(cx, 240, text="PI IS DISCOVERABLE", fill=FG,
+                                                font=("Courier", 20, "bold"))
+                        self.canvas.create_text(cx, 280, text="Connect from your phone", fill=FG, font=("Courier", 14))
+
+                def move(self, d, is_vertical=True):
+                    limit = len(self.devices) if self.mode == "OUTPUT" else 0
+                    self.cur_idx = (self.cur_idx + d) % (limit + 1)
+                    self.draw_ui()
+
+                def select(self):
+                    if self.cur_idx == 0:
+                        # Toggle Mode
+                        self.mode = "OUTPUT" if self.mode == "INPUT" else "INPUT"
+                        if self.mode == "OUTPUT":
+                            self.devices = self.ctrl.get_bluetooth_devices()
+                        self.ctrl.set_bluetooth_mode(self.mode.lower())
+                    else:
+                        # Pair with selected device
+                        dev = self.devices[self.cur_idx - 1]
+                        subprocess.run(["bluetoothctl", "pair", dev['mac']])
+                        subprocess.run(["bluetoothctl", "connect", dev['mac']])
+                    self.draw_ui()
 
 # --- App Engine ---
 
@@ -661,38 +707,43 @@ class App(tk.Tk):
             pygame.init()
             pygame.mixer.music.set_endevent(MUSIC_END)
         except Exception as e:
-            print(f"Pygame Init Error: {e}")
+            print(f"Mixer Init Error: {e}")
 
-        self.title("PiDice MP3 Player")
+        self.title("PiDice MP3")
         self.attributes('-fullscreen', True)
         self.config(cursor="none", bg=BG)
 
         self.update_idletasks()
         self.screen_w = self.winfo_screenwidth()
         self.screen_h = self.winfo_screenheight()
+        self.img_cache = {}
 
-        self.playlist = []
-        self.idx = 0
-        self.path = ""
-        self.vol_level = 0.5
+        self.vol_presets = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        self.vol_idx = 10
+        self.vol_level = self.vol_presets[self.vol_idx] / 100.0
+
+        self.playlist, self.idx, self.path = [], 0, ""
         self.repeat_state = False
         self.is_paused = False
         self.current_screen = None
-        self.sleep_idx = 0
-        self.audio_output = "jack"
+        self.audio_output = "3.5mm Jack"
         self.fps_cap = 30
         self.resolution_mode = "800x480"
-        self.sleep_opts = ["OFF", "15S", "30S", "1M", "2M"]
-        self.img_cache = {}
-        self.settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
 
+        self._switching = False
+        self._processing_event = False
+
+        self.sleep_idx = 0
+        self.sleep_opts = ["OFF", "15S", "30S", "1M", "2M"]
+        self.last_input_time = time.time()
+        self.screen_on = True
+
+        self.settings_file = os.path.join(os.path.dirname(__file__), "settings.json")
         self.load_settings()
 
+        from __main__ import TopBar
         self.top_bar = TopBar(self, self)
         self.top_bar.pack(side="top", fill="x")
-
-        self.status_label = tk.Label(self, text="", font=("Courier", 10, "bold"), bg=BG, fg=FG)
-        self.status_label.place(relx=1.0, rely=0.05, anchor="ne", x=-10)
 
         self.container = tk.Frame(self, bg=BG)
         self.container.pack(side="top", fill="both", expand=True)
@@ -700,48 +751,113 @@ class App(tk.Tk):
         self.container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (MP3Menu, SettingsMenu, NetworkBLEMenu, NowPlaying):
+        for F in (MP3Menu, SettingsMenu, NowPlaying):
             page_name = F.__name__
             frame = F(parent=self.container, controller=self)
             self.frames[page_name] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
-        # GPIO & Keyboard setup
         self.setup_gpio()
         self.bind_all("<Key>", self.handle_keys)
-
-        self.show_frame("MP3Menu")
         self.check_pygame_events()
+        self.check_sleep_timer()
 
-    def setup_gpio(self):
+        self.set_screen_state(True)
+        self.show_frame("MP3Menu")
+
+    def get_bt_devices(self):
         try:
-            from gpiozero import Button as GPIOButton
-            # Map GPIO to internal keysyms
-            pins = {22: "Up", 27: "Down", 17: "Left", 23: "Right", 24: "Return"}
-            self.physical_buttons = []
-            for pin, key in pins.items():
-                btn = GPIOButton(pin, bounce_time=0.05)
-                # Redirect GPIO press to the unified handle_keys method
-                btn.when_pressed = lambda k=key: self.handle_keys(type('obj', (object,), {'keysym': k}))
-                self.physical_buttons.append(btn)
+            subprocess.run(["bluetoothctl", "scan", "on"], timeout=2, capture_output=True)
+            result = subprocess.run(["bluetoothctl", "devices"], capture_output=True, text=True)
+            devices = []
+            for line in result.stdout.split('\n'):
+                if "Device" in line:
+                    parts = line.split(' ', 2)
+                    devices.append((parts[2], parts[1]))
+            return devices if devices else [("No Devices Found", "")]
+        except:
+            return [("Scan Error", "")]
+
+    def get_system_outputs(self):
+        try:
+            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True)
+            outputs = ["3.5mm Jack"]
+            for line in result.stdout.split('\n'):
+                if "card" in line and "device" in line:
+                    name = line.split('[')[1].split(']')[0] if '[' in line else "Hardware Output"
+                    outputs.append(name)
+            return list(dict.fromkeys(outputs))
+        except:
+            return ["3.5mm Jack"]
+
+    def set_bt_mode(self, mode):
+        if mode == "INPUT":
+            os.system("sudo hciconfig hci0 class 0x20041C")
+            subprocess.run(["bluetoothctl", "discoverable", "on"])
+            subprocess.run(["bluetoothctl", "pairable", "on"])
+        else:
+            os.system("sudo hciconfig hci0 class 0x000100")
+            subprocess.run(["bluetoothctl", "discoverable", "off"])
+
+    def play_track(self, playlist, index, path, increment=False):
+        self.playlist = playlist
+        self.path = path
+        if increment:
+            next_idx = self.idx + 1
+            if next_idx < len(self.playlist):
+                self.idx = next_idx
+            else:
+                if self.repeat_state:
+                    self.idx = 0
+                else:
+                    pygame.mixer.music.stop()
+                    self._switching = self._processing_event = False
+                    return
+        else:
+            self.idx = index
+        try:
+            pygame.mixer.music.set_endevent(0)
+            track_file = os.path.join(self.path, self.playlist[self.idx])
+            pygame.mixer.music.stop()
+            pygame.mixer.music.load(track_file)
+            pygame.mixer.music.set_volume(self.vol_level)
+            pygame.mixer.music.play()
+            pygame.mixer.music.set_endevent(MUSIC_END)
+            self.is_paused = False
+            self._switching = self._processing_event = False
+            self.reset_sleep_timer()
+            if self.current_screen == "NowPlaying":
+                self.frames["NowPlaying"].refresh()
+            else:
+                self.show_frame("NowPlaying")
         except Exception as e:
-            print(f"GPIO Error: {e}")
+            self._switching = self._processing_event = False
+            print(f"Playback Error: {e}")
+
+    def check_pygame_events(self):
+        for event in pygame.event.get():
+            if event.type == MUSIC_END:
+                if self._processing_event or self.is_paused: continue
+                if self.playlist:
+                    self._processing_event = True
+                    self._switching = True
+                    self.after(200, lambda: self.play_track(self.playlist, self.idx, self.path, increment=True))
+        self.after(100, self.check_pygame_events)
 
     def handle_keys(self, event):
+        self.reset_sleep_timer()
         if self.current_screen not in self.frames: return
         f = self.frames[self.current_screen]
         key = event.keysym
-
-        # Unified mapping: calls move(delta, is_vertical) or select() on the current frame
-        if key in ("Up", "KP_Up", "8"):
-            f.move(-1, is_vertical=True)
-        elif key in ("Down", "KP_Down", "2"):
-            f.move(1, is_vertical=True)
-        elif key in ("Left", "KP_Left", "4"):
-            f.move(-1, is_vertical=False)
-        elif key in ("Right", "KP_Right", "6"):
-            f.move(1, is_vertical=False)
-        elif key in ("Return", "KP_Enter", "5", "space"):
+        if key in ("Up", "8"):
+            f.move(-1, True)
+        elif key in ("Down", "2"):
+            f.move(1, True)
+        elif key in ("Left", "4"):
+            f.move(-1, False)
+        elif key in ("Right", "6"):
+            f.move(1, False)
+        elif key in ("Return", "5", "space"):
             f.select()
         elif key in ("s", "S"):
             self.show_frame("SettingsMenu")
@@ -750,43 +866,61 @@ class App(tk.Tk):
         self.current_screen = cont
         frame = self.frames[cont]
         frame.tkraise()
-        frame.focus_force()
-        if hasattr(frame, 'refresh'):
-            self.after(20, frame.refresh)
-
-    def play_track(self, playlist, index, path, *args, **kwargs):
-        self.playlist, self.idx, self.path = playlist, index, path
-        try:
-            if not pygame.mixer.get_init(): pygame.mixer.init()
-            pygame.mixer.music.load(os.path.join(path, playlist[index]))
-            pygame.mixer.music.set_volume(self.vol_level)
-            pygame.mixer.music.play()
-            self.is_paused = False
-            self.show_frame("NowPlaying")
-        except Exception as e:
-            print(f"Playback Error: {e}")
-
-    def check_pygame_events(self):
-        for event in pygame.event.get():
-            if event.type == MUSIC_END:
-                if not self.is_paused and self.playlist:
-                    n = self.idx if self.repeat_state else (self.idx + 1) % len(self.playlist)
-                    self.play_track(self.playlist, n, self.path)
-        self.after(200, self.check_pygame_events)
+        if hasattr(frame, 'refresh'): self.after(20, frame.refresh)
 
     def load_settings(self):
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, "r") as f:
                     d = json.load(f)
-                    self.vol_level = d.get("vol_level", 0.5)
+                    self.vol_idx = d.get("vol_idx", 10)
                     self.repeat_state = d.get("repeat", False)
                     self.sleep_idx = d.get("sleep_idx", 0)
-                    self.audio_output = d.get("audio_output", "jack")
+                    self.audio_output = d.get("audio_output", "3.5mm Jack")
                     self.fps_cap = d.get("fps_cap", 30)
                     self.resolution_mode = d.get("resolution_mode", "800x480")
             except:
                 pass
+
+    def save_settings(self):
+        try:
+            data = {"vol_idx": self.vol_idx, "repeat": self.repeat_state,
+                    "sleep_idx": self.sleep_idx, "audio_output": self.audio_output,
+                    "fps_cap": self.fps_cap, "resolution_mode": self.resolution_mode}
+            with open(self.settings_file, "w") as f:
+                json.dump(data, f)
+        except:
+            pass
+
+    def set_screen_state(self, on=True):
+        state = "1" if on else "0"
+        os.system(f"vcgencmd display_power {state}")
+
+    def reset_sleep_timer(self):
+        self.last_input_time = time.time()
+        if not self.screen_on:
+            self.screen_on = True
+            self.set_screen_state(True)
+
+    def check_sleep_timer(self):
+        if self.sleep_idx > 0:
+            times = {"15S": 15, "30S": 30, "1M": 60, "2M": 120}
+            limit = times.get(self.sleep_opts[self.sleep_idx], 999)
+            if time.time() - self.last_input_time > limit and self.screen_on:
+                self.screen_on = False
+                self.set_screen_state(False)
+        self.after(1000, self.check_sleep_timer)
+
+    def setup_gpio(self):
+        try:
+            pins = {22: "Up", 27: "Down", 17: "Left", 23: "Right", 24: "Return"}
+            self.physical_buttons = []
+            for pin, key in pins.items():
+                btn = GPIOButton(pin, bounce_time=0.05)
+                btn.when_pressed = lambda k=key: self.handle_keys(type('obj', (object,), {'keysym': k}))
+                self.physical_buttons.append(btn)
+        except:
+            pass
 
 
 if __name__ == "__main__":
